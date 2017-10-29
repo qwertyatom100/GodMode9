@@ -13,7 +13,7 @@
 #include "hid.h"
 #include "ui.h"
 
-#define _MAX_ARGS       3
+#define _MAX_ARGS       4
 #define _ARG_MAX_LEN    512
 #define _VAR_CNT_LEN    256
 #define _VAR_NAME_LEN   32
@@ -44,6 +44,10 @@ typedef enum {
     CMD_ID_FILESEL,
     CMD_ID_SET,
     CMD_ID_CHK,
+    CMD_ID_IF,
+    CMD_ID_ELSE,
+    CMD_ID_END,
+    CMD_ID_GOTO,
     CMD_ID_ALLOW,
     CMD_ID_CP,
     CMD_ID_MV,
@@ -89,6 +93,10 @@ Gm9ScriptCmd cmd_list[] = {
     { CMD_ID_FILESEL , "filesel" , 3, 0 },
     { CMD_ID_SET     , "set"     , 2, 0 },
     { CMD_ID_CHK     , "chk"     , 2, _FLG('u') },
+    { CMD_ID_IF      , "if"      , 1, 0 },
+    { CMD_ID_ELSE    , "else"    , 0, 0 },
+    { CMD_ID_END     , "end"     , 0, 0 },
+    { CMD_ID_GOTO    , "goto"    , 1, 0 },
     { CMD_ID_ALLOW   , "allow"   , 1, _FLG('a') },
     { CMD_ID_CP      , "cp"      , 2, _FLG('h') | _FLG('w') | _FLG('k') | _FLG('s') | _FLG('n')},
     { CMD_ID_MV      , "mv"      , 2, _FLG('w') | _FLG('k') | _FLG('s') | _FLG('n') },
@@ -119,6 +127,18 @@ static u32 preview_mode = 0; // 0 -> off 1 -> quick 2 -> full
 static u32 script_color_active = 0;
 static u32 script_color_comment = 0;
 static u32 script_color_code = 0;
+
+// for if,else,end
+static bool syntax_error = false;    // flag to disable -o and -s, set in run_cmd() and used in ExecuteGM9Script()
+static bool running_cond = false;    // true if running the "if"'s condition commands
+static bool if_cond_res = false;     // result of a command as condition
+static u32 ifcnt = 0;                // current # of "if" nesting
+static u32 ifcnt_skipped = 0;        // ifcnt increase while skipping conditional blocks
+static u8 skip = 0;                  // 0-> not skipping 1-> if not match and skip until "else" or "end"
+                                     // 2-> if match and skip from "else" to "end" 3-> searching for a label
+                                     
+// for goto
+static char findlabel [_ARG_MAX_LEN + 1]; // the label name finding
 
 static inline bool strntohex(const char* str, u8* hex, u32 len) {
     if (!len) {
@@ -265,7 +285,7 @@ void upd_var(const char* name) {
             (FileGetData("1:/rw/sys/SecureInfo_B", secinfo_data, 0x11, 0x100) != 0x11))
             snprintf(env_serial, 0xF, "UNKNOWN");
         else if (*secinfo_data < SMDH_NUM_REGIONS)
-     	    strncpy(env_region, g_regionNamesShort[*secinfo_data], countof(env_region));
+            strncpy(env_region, g_regionNamesShort[*secinfo_data], countof(env_region));
         
         set_var("SERIAL", env_serial);
         set_var("REGION", env_region);
@@ -396,9 +416,9 @@ cmd_id get_cmd_id(char* cmd, u32 len, u32 flags, u32 argc, char* err_str) {
     
     if (!cmd_entry) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "unknown cmd");
-    } else if (cmd_entry->n_args != argc) {
+    } else if (cmd_entry->n_args != argc && (strncmp(cmd, "if", 2) != 0)) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "bad # of args");
-    } else if (~(cmd_entry->allowed_flags|_FLG('o')|_FLG('s')) & flags) {
+    } else if (~(cmd_entry->allowed_flags|_FLG('o')|_FLG('s')) & flags && (strncmp(cmd, "if", 2) != 0)) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "unrecognized flags");
     } else return cmd_entry->id;
     
@@ -469,7 +489,7 @@ bool parse_line(const char* line_start, const char* line_end, cmd_id* cmdid, u32
     char* cmd = NULL;
     u32 cmd_len = 0;
     if (!(cmd = get_string(ptr, line_end, &cmd_len, &ptr, err_str))) return false; // string error
-    if ((cmd >= line_end) || (*cmd == '#')) return true; // empty line or comment
+    if ((cmd >= line_end) || (*cmd == '#') || (*cmd == '@')) return true; // empty line or comment or label
     
     // got cmd, now parse flags & args
     while ((str = get_string(ptr, line_end, &len, &ptr, err_str))) {
@@ -507,6 +527,17 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
                 sz_org = 0;
             }
         }
+    }
+    
+    // block some commands as condition of "if"
+    if (running_cond && (
+        id == CMD_ID_IF   ||
+        id == CMD_ID_ELSE ||
+        id == CMD_ID_END  ||
+        id == CMD_ID_GOTO
+        )) {
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "Invalid command as conditions");
+            return false;
     }
     
     // perform command
@@ -583,6 +614,55 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
         if (flags & _FLG('a')) ret = CheckDirWritePermissions(argv[0]);
         else ret = CheckWritePermissions(argv[0]);
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "permission fail");
+    }
+    else if (id == CMD_ID_IF) {
+        // check the result of condition command
+        if (if_cond_res) {
+            // succeed
+            skip = 0;
+        }else{
+            // failed
+            skip = 1;
+            ifcnt_skipped = 0;
+        }
+        
+        ifcnt++;
+        ret = true;
+    }
+    else if (id == CMD_ID_ELSE) {
+        // check syntax errors
+        if (ifcnt == 0) {
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "'else' without 'if'");
+            syntax_error = true; // syntax errors are never silent or optional
+            return false;
+        }
+        
+        // turn the skip state
+        ifcnt_skipped = 0;
+        skip = 2;
+        
+        ret = true;
+    }
+    else if (id == CMD_ID_END) {
+        // check syntax errors
+        if (ifcnt == 0){
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "'end' without 'if'");
+            syntax_error = true; // syntax errors are never silent or optional
+            return false;
+        }
+        
+        // close recent "if"
+        ifcnt--;
+        skip = 0;
+        ifcnt_skipped = 0;
+        
+        ret = true;
+    }
+    else if (id == CMD_ID_GOTO) {
+        skip = 3; // searching for a label
+        
+        snprintf(findlabel, _ARG_MAX_LEN, "%s", argv[0]);
+        ret = true;
     }
     else if (id == CMD_ID_CP) {
         u32 flags_ext = BUILD_PATH;
@@ -774,12 +854,128 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
     return ret;
 }
 
+bool search_label(char** ptr_p, char** line_end_p, u32* flags, char* err_str, u32* lno, const char* end) {
+    *ptr_p = (char*) SCRIPT_BUFFER; // return to the first line
+    *flags = 0;
+    
+    for (*lno = 1; *ptr_p < end; (*lno)++, *ptr_p = *line_end_p + 1) { // script execute loop
+        // find line end
+        *line_end_p = strchr(*ptr_p, '\n');
+        if (!*line_end_p) *line_end_p = *ptr_p + strlen(*ptr_p);
+        char* line_end = *line_end_p;
+        
+        // skip whitespaces
+        for (; IS_WHITESPACE(**ptr_p) && (*ptr_p < line_end); (*ptr_p)++);
+        if (*ptr_p >= line_end || **ptr_p != '@') continue; // end reached or no label in this line
+        
+        // count the length of a label name
+        (*ptr_p)++; // make it to point the start of a label name
+        u32 len = 0;
+        while (!IS_WHITESPACE(*(*ptr_p + len)) && (*ptr_p + len) < line_end) len++;
+        
+        if (strncmp(*ptr_p, findlabel, len) == 0 && !findlabel[len]) {
+            // searching label found
+            findlabel[0] = '\000';
+            skip = 0;
+            ifcnt_skipped = 0;
+            ifcnt = 0; // jumping into conditional block is unexpected/unsupported
+            return true;
+        }
+    }
+    
+    (*lno)--; // when exited for loop, it is 1 larger than should be, so fix it
+    
+    // label not found and reached the end of the script
+    if (err_str) snprintf(err_str, _ERR_STR_LEN, "label not found");
+    return false;
+}
+
+bool skip_cond_block(char** ptr_p, char** line_end_p, u32* flags, char* err_str, u32* lno, const char* end) {
+    // This function is to skip conditional blocks until stop skipping
+    // skip is always 1 or 2 at the start
+    
+    *ptr_p = *line_end_p + 1;
+    
+    for (; *ptr_p < end;) { // script execute loop
+        (*lno)++;
+        *flags = 0;
+        
+        // find line end
+        *line_end_p = strchr(*ptr_p, '\n');
+        if (!*line_end_p) *line_end_p = *ptr_p + strlen(*ptr_p);
+    
+        char args[_MAX_ARGS][_ARG_MAX_LEN];
+        char* argv[_MAX_ARGS];
+        char* line_end = *line_end_p; // const, line_end_p is only used in "goto" command
+        u32 argc = 0;
+        cmd_id cmdid;
+
+        // set up argv array
+        for (u32 i = 0; i < _MAX_ARGS; i++)
+            argv[i] = args[i];
+    
+        // flags handling (if no pointer given)
+        u32 lflags;
+        if (!flags) flags = &lflags;
+        *flags = 0;
+        
+        // parse current line, grab cmd / flags / args
+        if (!parse_line(*ptr_p, line_end, &cmdid, flags, &argc, argv, err_str)) {
+            *flags &= ~(_FLG('o')|_FLG('s')); // parsing errors are never silent or optional
+            return false;
+        }
+        
+        // handle control commands
+        if (cmdid == CMD_ID_IF) {
+            ifcnt_skipped++;
+            ifcnt++;
+        }else if (cmdid == CMD_ID_ELSE) {
+            // check syntax errors
+            if (ifcnt == 0) {
+                if (err_str) snprintf(err_str, _ERR_STR_LEN, "'else' without 'if'");
+                *flags &= ~(_FLG('o')|_FLG('s')); // syntax errors are never silent or optional
+                return false;
+            }
+            
+            // turn the skip state
+            if (ifcnt_skipped == 0) {
+                skip = 0;
+                return true; // skipping stopped, exit the function
+            }
+        }else if (cmdid == CMD_ID_END) {
+            // check syntax errors
+            if (ifcnt == 0){
+                if (err_str) snprintf(err_str, _ERR_STR_LEN, "'end' without 'if'");
+                *flags &= ~(_FLG('o')|_FLG('s')); // syntax errors are never silent or optional
+                return false;
+            }
+            
+            if (ifcnt_skipped == 0) {
+                skip = 0;
+                ifcnt--;
+                return true; // skipping stopped, exit the function
+            }else{
+                ifcnt--;
+                ifcnt_skipped--;
+            }
+        }
+        
+        // reposition pointer
+        *ptr_p = *line_end_p + 1;
+    }
+    
+    // the conditional block is not closed and reached the end of the script
+    // if (err_str) snprintf(err_str, _ERR_STR_LEN, "'end' expected");
+    // *flags &= ~(_FLG('o')|_FLG('s')); // syntax errors are never silent or optional
+    return false;
+}
+
 bool run_line(const char* line_start, const char* line_end, u32* flags, char* err_str) {
     char args[_MAX_ARGS][_ARG_MAX_LEN];
     char* argv[_MAX_ARGS];
     u32 argc = 0;
     cmd_id cmdid;
-    
+
     // set up argv array
     for (u32 i = 0; i < _MAX_ARGS; i++)
         argv[i] = args[i];
@@ -792,7 +988,18 @@ bool run_line(const char* line_start, const char* line_end, u32* flags, char* er
     // parse current line, grab cmd / flags / args
     if (!parse_line(line_start, line_end, &cmdid, flags, &argc, argv, err_str)) {
         *flags &= ~(_FLG('o')|_FLG('s')); // parsing errors are never silent or optional
-        return false; 
+        return false;
+    }
+    
+    // handle "if"
+    if (cmdid == CMD_ID_IF && !running_cond) {
+        // get the pointer which points 'i' of "if"
+        u32 cnt = 0;
+        for (; IS_WHITESPACE(*(line_start + cnt)); cnt++);
+        
+        running_cond = true; // set flag
+        if_cond_res = run_line(line_start+cnt+2, line_end, flags, err_str);
+        running_cond = false; // reset flag
     }
     
     // run the command (if available)
@@ -1056,6 +1263,15 @@ bool ExecuteGM9Script(const char* path_script) {
     char* script = (char*) SCRIPT_BUFFER;
     char* ptr = script;
     
+    // reset some global var for "if" and "goto"
+    findlabel [0] = '\000';
+    skip = 0;
+    ifcnt = 0;
+    ifcnt_skipped = 0;
+    running_cond = false;
+    if_cond_res = false;
+    syntax_error = false;
+    
     // fetch script - if no path is given, assume script already in script buffer
     u32 script_size = (path_script) ? FileGetData(path_script, (u8*) script, SCRIPT_MAX_SIZE, 0) : strnlen(script, SCRIPT_BUFFER_SIZE);
     if (!script_size || (script_size >= SCRIPT_BUFFER_SIZE))
@@ -1117,7 +1333,22 @@ bool ExecuteGM9Script(const char* path_script) {
         
         // run command
         char err_str[_ERR_STR_LEN+1] = { 0 };
-        if (!run_line(ptr, line_end, &flags, err_str)) { // error handling
+        bool result = true;
+        if (skip == 0) result = run_line(ptr, line_end, &flags, err_str);
+        else result = false; // unexpected
+        
+        // search for a label if required
+        if (skip == 3) result = search_label(&ptr, &line_end, &flags, err_str ,&lno, end); // searching a label
+        
+        // skip conditional block if should
+        if (skip == 1 || skip == 2) result = skip_cond_block(&ptr, &line_end, &flags, err_str, &lno, end);
+        
+        
+        if (!result) { // error handling
+            if (syntax_error) { // flag set in run_cmd
+                syntax_error = false;
+                flags &= ~(_FLG('o')|_FLG('s')); // never silent or optional
+            }
             if (!(flags & _FLG('s'))) { // not silent
                 if (!*err_str) {
                     char* msg_fail = get_var("ERRORMSG", NULL);
