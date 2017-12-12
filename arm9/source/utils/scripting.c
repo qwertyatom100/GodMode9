@@ -416,9 +416,11 @@ cmd_id get_cmd_id(char* cmd, u32 len, u32 flags, u32 argc, char* err_str) {
     
     if (!cmd_entry) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "unknown cmd");
-    } else if (cmd_entry->n_args != argc && (strncmp(cmd, "if", 2) != 0)) {
+    } else if (cmd_entry->id == CMD_ID_IF) {
+        return CMD_ID_IF; // no need to check anything but command ID here
+    } else if (cmd_entry->n_args != argc) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "bad # of args");
-    } else if (~(cmd_entry->allowed_flags|_FLG('o')|_FLG('s')) & flags && (strncmp(cmd, "if", 2) != 0)) {
+    } else if (~(cmd_entry->allowed_flags|_FLG('o')|_FLG('s')) & flags) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "unrecognized flags");
     } else return cmd_entry->id;
     
