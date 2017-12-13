@@ -18,6 +18,8 @@
 #define _VAR_CNT_LEN    256
 #define _VAR_NAME_LEN   32
 #define _ERR_STR_LEN    32
+#define _ARG_TRUE       "TRUE"
+#define _ARG_FALSE      "FALSE"
 
 #define VAR_BUFFER      (SCRIPT_BUFFER + SCRIPT_BUFFER_SIZE - VAR_BUFFER_SIZE)
 
@@ -34,7 +36,7 @@
 #define IS_WHITESPACE(c)    ((c == ' ') || (c == '\t') || (c == '\r') || (c == '\n'))
 #define _FLG(c)             (1 << (c - 'a'))
 
-// command ids
+// command ids (also entry into the cmd_list aray below)
 typedef enum {
     CMD_ID_NONE = 0,
     CMD_ID_ECHO,
@@ -86,6 +88,7 @@ typedef struct {
 } Gm9ScriptVar;
 
 Gm9ScriptCmd cmd_list[] = {
+    { CMD_ID_NONE    , "#"       , 0, 0 }, // dummy entry
     { CMD_ID_ECHO    , "echo"    , 1, 0 },
     { CMD_ID_QR      , "qr"      , 2, 0 },
     { CMD_ID_ASK     , "ask"     , 1, 0 },
@@ -131,7 +134,6 @@ static u32 script_color_code = 0;
 // for if,else,end
 static bool syntax_error = false;    // flag to disable -o and -s, set in run_cmd() and used in ExecuteGM9Script()
 static bool running_cond = false;    // true if running the "if"'s condition commands
-static bool if_cond_res = false;     // result of a command as condition
 static u32 ifcnt = 0;                // current # of "if" nesting
 static u32 ifcnt_skipped = 0;        // ifcnt increase while skipping conditional blocks
 static u8 skip = 0;                  // 0-> not skipping 1-> if not match and skip until "else" or "end"
@@ -424,7 +426,7 @@ cmd_id get_cmd_id(char* cmd, u32 len, u32 flags, u32 argc, char* err_str) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "unrecognized flags");
     } else return cmd_entry->id;
     
-    return 0;
+    return CMD_ID_NONE;
 }
 
 u32 get_flag(char* str, u32 len, char* err_str) {
@@ -618,12 +620,10 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "permission fail");
     }
     else if (id == CMD_ID_IF) {
-        // check the result of condition command
-        if (if_cond_res) {
-            // succeed
-            skip = 0;
-        }else{
-            // failed
+        // check the argument
+        if (strncmp(argv[0], _ARG_TRUE, _ARG_MAX_LEN) == 0) {
+            skip = 0; // "if true", nothing to skip
+        } else { // "if false"
             skip = 1;
             ifcnt_skipped = 0;
         }
@@ -995,12 +995,18 @@ bool run_line(const char* line_start, const char* line_end, u32* flags, char* er
     
     // handle "if"
     if (cmdid == CMD_ID_IF && !running_cond) {
-        // get the pointer which points 'i' of "if"
-        u32 cnt = 0;
-        for (; IS_WHITESPACE(*(line_start + cnt)); cnt++);
+        // set defaults
+        argc = 1;
+        strncpy(argv[0], _ARG_FALSE, _ARG_MAX_LEN);
+        
+        // skip to behind the "if" command
+        char* line_start_next = (char*) line_start;
+        for (; IS_WHITESPACE(*line_start_next); line_start_next++);
+        line_start_next += strnlen(cmd_list[CMD_ID_IF].cmd, 16);
         
         running_cond = true; // set flag
-        if_cond_res = run_line(line_start+cnt+2, line_end, flags, err_str);
+        if (run_line(line_start_next, line_end, flags, err_str))
+            strncpy(argv[0], _ARG_TRUE, _ARG_MAX_LEN);
         running_cond = false; // reset flag
     }
     
@@ -1271,7 +1277,6 @@ bool ExecuteGM9Script(const char* path_script) {
     ifcnt = 0;
     ifcnt_skipped = 0;
     running_cond = false;
-    if_cond_res = false;
     syntax_error = false;
     
     // fetch script - if no path is given, assume script already in script buffer
