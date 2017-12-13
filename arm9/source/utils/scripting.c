@@ -39,6 +39,10 @@
 // command ids (also entry into the cmd_list aray below)
 typedef enum {
     CMD_ID_NONE = 0,
+    CMD_ID_IF,
+    CMD_ID_ELSE,
+    CMD_ID_END,
+    CMD_ID_GOTO,
     CMD_ID_ECHO,
     CMD_ID_QR,
     CMD_ID_ASK,
@@ -46,10 +50,6 @@ typedef enum {
     CMD_ID_FILESEL,
     CMD_ID_SET,
     CMD_ID_CHK,
-    CMD_ID_IF,
-    CMD_ID_ELSE,
-    CMD_ID_END,
-    CMD_ID_GOTO,
     CMD_ID_ALLOW,
     CMD_ID_CP,
     CMD_ID_MV,
@@ -89,6 +89,10 @@ typedef struct {
 
 Gm9ScriptCmd cmd_list[] = {
     { CMD_ID_NONE    , "#"       , 0, 0 }, // dummy entry
+    { CMD_ID_IF      , "if"      , 1, 0 }, // control flow commands at the start of the list
+    { CMD_ID_ELSE    , "else"    , 0, 0 },
+    { CMD_ID_END     , "end"     , 0, 0 },
+    { CMD_ID_GOTO    , "goto"    , 1, 0 },
     { CMD_ID_ECHO    , "echo"    , 1, 0 },
     { CMD_ID_QR      , "qr"      , 2, 0 },
     { CMD_ID_ASK     , "ask"     , 1, 0 },
@@ -96,10 +100,6 @@ Gm9ScriptCmd cmd_list[] = {
     { CMD_ID_FILESEL , "filesel" , 3, 0 },
     { CMD_ID_SET     , "set"     , 2, 0 },
     { CMD_ID_CHK     , "chk"     , 2, _FLG('u') },
-    { CMD_ID_IF      , "if"      , 1, 0 },
-    { CMD_ID_ELSE    , "else"    , 0, 0 },
-    { CMD_ID_END     , "end"     , 0, 0 },
-    { CMD_ID_GOTO    , "goto"    , 1, 0 },
     { CMD_ID_ALLOW   , "allow"   , 1, _FLG('a') },
     { CMD_ID_CP      , "cp"      , 2, _FLG('h') | _FLG('w') | _FLG('k') | _FLG('s') | _FLG('n')},
     { CMD_ID_MV      , "mv"      , 2, _FLG('w') | _FLG('k') | _FLG('s') | _FLG('n') },
@@ -133,7 +133,6 @@ static u32 script_color_code = 0;
 
 // for if,else,end
 static bool syntax_error = false;    // flag to disable -o and -s, set in run_cmd() and used in ExecuteGM9Script()
-static bool running_cond = false;    // true if running the "if"'s condition commands
 static u32 ifcnt = 0;                // current # of "if" nesting
 static u32 ifcnt_skipped = 0;        // ifcnt increase while skipping conditional blocks
 static u8 skip = 0;                  // 0-> not skipping 1-> if not match and skip until "else" or "end"
@@ -531,17 +530,6 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
                 sz_org = 0;
             }
         }
-    }
-    
-    // block some commands as condition of "if"
-    if (running_cond && (
-        id == CMD_ID_IF   ||
-        id == CMD_ID_ELSE ||
-        id == CMD_ID_END  ||
-        id == CMD_ID_GOTO
-        )) {
-            if (err_str) snprintf(err_str, _ERR_STR_LEN, "Invalid command as conditions");
-            return false;
     }
     
     // perform command
@@ -972,7 +960,7 @@ bool skip_cond_block(char** ptr_p, char** line_end_p, u32* flags, char* err_str,
     return false;
 }
 
-bool run_line(const char* line_start, const char* line_end, u32* flags, char* err_str) {
+bool run_line(const char* line_start, const char* line_end, u32* flags, char* err_str, bool if_cond) {
     char args[_MAX_ARGS][_ARG_MAX_LEN];
     char* argv[_MAX_ARGS];
     u32 argc = 0;
@@ -993,8 +981,14 @@ bool run_line(const char* line_start, const char* line_end, u32* flags, char* er
         return false;
     }
     
+    // block out control flow commands
+    if (if_cond && ((cmdid == CMD_ID_IF) || (cmdid == CMD_ID_ELSE) || (cmdid == CMD_ID_END) || (cmdid == CMD_ID_GOTO))) {
+        if (err_str) snprintf(err_str, _ERR_STR_LEN, "control flow error");
+        return false;
+    }
+    
     // handle "if"
-    if (cmdid == CMD_ID_IF && !running_cond) {
+    if (cmdid == CMD_ID_IF) {
         // set defaults
         argc = 1;
         strncpy(argv[0], _ARG_FALSE, _ARG_MAX_LEN);
@@ -1004,10 +998,9 @@ bool run_line(const char* line_start, const char* line_end, u32* flags, char* er
         for (; IS_WHITESPACE(*line_start_next); line_start_next++);
         line_start_next += strnlen(cmd_list[CMD_ID_IF].cmd, 16);
         
-        running_cond = true; // set flag
-        if (run_line(line_start_next, line_end, flags, err_str))
+        // run condition, take over result
+        if (run_line(line_start_next, line_end, flags, err_str, true))
             strncpy(argv[0], _ARG_TRUE, _ARG_MAX_LEN);
-        running_cond = false; // reset flag
     }
     
     // run the command (if available)
@@ -1276,7 +1269,6 @@ bool ExecuteGM9Script(const char* path_script) {
     skip = 0;
     ifcnt = 0;
     ifcnt_skipped = 0;
-    running_cond = false;
     syntax_error = false;
     
     // fetch script - if no path is given, assume script already in script buffer
@@ -1341,7 +1333,7 @@ bool ExecuteGM9Script(const char* path_script) {
         // run command
         char err_str[_ERR_STR_LEN+1] = { 0 };
         bool result = true;
-        if (skip == 0) result = run_line(ptr, line_end, &flags, err_str);
+        if (skip == 0) result = run_line(ptr, line_end, &flags, err_str, false);
         else result = false; // unexpected
         
         // search for a label if required
