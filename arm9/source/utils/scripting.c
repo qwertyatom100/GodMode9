@@ -89,7 +89,7 @@ typedef struct {
 
 Gm9ScriptCmd cmd_list[] = {
     { CMD_ID_NONE    , "#"       , 0, 0 }, // dummy entry
-    { CMD_ID_IF      , "if"      , 1, 0 }, // control flow commands at the start of the list
+    { CMD_ID_IF      , "if"      , 1, 0 }, // control flow commands at the top of the list
     { CMD_ID_ELSE    , "else"    , 0, 0 },
     { CMD_ID_END     , "end"     , 0, 0 },
     { CMD_ID_GOTO    , "goto"    , 1, 0 },
@@ -417,8 +417,6 @@ cmd_id get_cmd_id(char* cmd, u32 len, u32 flags, u32 argc, char* err_str) {
     
     if (!cmd_entry) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "unknown cmd");
-    } else if (cmd_entry->id == CMD_ID_IF) {
-        return CMD_ID_IF; // no need to check anything but command ID here
     } else if (cmd_entry->n_args != argc) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "bad # of args");
     } else if (~(cmd_entry->allowed_flags|_FLG('o')|_FLG('s')) & flags) {
@@ -493,6 +491,12 @@ bool parse_line(const char* line_start, const char* line_end, cmd_id* cmdid, u32
     u32 cmd_len = 0;
     if (!(cmd = get_string(ptr, line_end, &cmd_len, &ptr, err_str))) return false; // string error
     if ((cmd >= line_end) || (*cmd == '#') || (*cmd == '@')) return true; // empty line or comment or label
+    
+    // special handling for "if"
+    if ((cmd_len == 2) && (strncmp(cmd, "if", 2) == 0)) {
+        *cmdid = CMD_ID_IF;
+        return true;
+    }
     
     // got cmd, now parse flags & args
     while ((str = get_string(ptr, line_end, &len, &ptr, err_str))) {
