@@ -139,14 +139,14 @@ static u32 script_color_comment = 0;
 static u32 script_color_code = 0;
 
 // for if,else,end
-static bool syntax_error = false;    // flag to disable -o and -s, set in run_cmd() and used in ExecuteGM9Script()
 static u32 ifcnt = 0;                // current # of "if" nesting
 static u32 ifcnt_skipped = 0;        // ifcnt increase while skipping conditional blocks
 static u8 skip = 0;                  // 0-> not skipping 1-> if not match and skip until "else" or "end"
                                      // 2-> if match and skip from "else" to "end" 3-> searching for a label
 
 // control flow
-static char* jump_ptr = NULL; // next position after a jump
+static bool syntax_error = false;   // if true, severe error, script has to stop
+static char* jump_ptr = NULL;       // next position after a jump
 
 static inline bool strntohex(const char* str, u8* hex, u32 len) {
     if (!len) {
@@ -1011,13 +1011,14 @@ bool run_line(const char* line_start, const char* line_end, u32* flags, char* er
     
     // parse current line, grab cmd / flags / args
     if (!parse_line(line_start, line_end, &cmdid, flags, &argc, argv, err_str)) {
-        *flags &= ~(_FLG('o')|_FLG('s')); // parsing errors are never silent or optional
+        syntax_error = true;
         return false;
     }
     
-    // block out control flow commands
+    // block out of control flow commands
     if (if_cond && ((cmdid == CMD_ID_IF) || (cmdid == CMD_ID_ELSE) || (cmdid == CMD_ID_END) || (cmdid == CMD_ID_GOTO))) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "control flow error");
+        syntax_error = true;
         return false;
     }
     
@@ -1374,10 +1375,9 @@ bool ExecuteGM9Script(const char* path_script) {
         
         
         if (!result) { // error handling
-            if (syntax_error) { // flag set in run_cmd
-                syntax_error = false;
+            if (syntax_error) // severe error, can't continue
                 flags &= ~(_FLG('o')|_FLG('s')); // never silent or optional
-            }
+            
             if (!(flags & _FLG('s'))) { // not silent
                 if (!*err_str) {
                     char* msg_fail = get_var("ERRORMSG", NULL);
