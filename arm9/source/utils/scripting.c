@@ -602,7 +602,55 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
     }
     
     // perform command
-    if (id == CMD_ID_ECHO) {
+    if (id == CMD_ID_IF) {
+        // check the argument
+        if (strncmp(argv[0], _ARG_TRUE, _ARG_MAX_LEN) == 0) {
+            skip = 0; // "if true", nothing to skip
+        } else { // "if false"
+            skip = 1;
+            ifcnt_skipped = 0;
+        }
+        
+        ifcnt++;
+        ret = true;
+    }
+    else if (id == CMD_ID_ELSE) {
+        // check syntax errors
+        if (ifcnt == 0) {
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "'else' without 'if'");
+            syntax_error = true; // syntax errors are never silent or optional
+            return false;
+        }
+        
+        // turn the skip state
+        ifcnt_skipped = 0;
+        skip = 2;
+        
+        ret = true;
+    }
+    else if (id == CMD_ID_END) {
+        // check syntax errors
+        if (ifcnt == 0){
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "'end' without 'if'");
+            syntax_error = true; // syntax errors are never silent or optional
+            return false;
+        }
+        
+        // close recent "if"
+        ifcnt--;
+        skip = 0;
+        ifcnt_skipped = 0;
+        
+        ret = true;
+    }
+    else if (id == CMD_ID_GOTO) {
+        jump_ptr = find_label(argv[0], NULL);
+        if (!jump_ptr) {
+            ret = false;
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "label not found");
+        }
+    }
+    else if (id == CMD_ID_ECHO) {
         ShowPrompt(false, argv[0]);
     }
     else if (id == CMD_ID_QR) {
@@ -675,54 +723,6 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
         if (flags & _FLG('a')) ret = CheckDirWritePermissions(argv[0]);
         else ret = CheckWritePermissions(argv[0]);
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "permission fail");
-    }
-    else if (id == CMD_ID_IF) {
-        // check the argument
-        if (strncmp(argv[0], _ARG_TRUE, _ARG_MAX_LEN) == 0) {
-            skip = 0; // "if true", nothing to skip
-        } else { // "if false"
-            skip = 1;
-            ifcnt_skipped = 0;
-        }
-        
-        ifcnt++;
-        ret = true;
-    }
-    else if (id == CMD_ID_ELSE) {
-        // check syntax errors
-        if (ifcnt == 0) {
-            if (err_str) snprintf(err_str, _ERR_STR_LEN, "'else' without 'if'");
-            syntax_error = true; // syntax errors are never silent or optional
-            return false;
-        }
-        
-        // turn the skip state
-        ifcnt_skipped = 0;
-        skip = 2;
-        
-        ret = true;
-    }
-    else if (id == CMD_ID_END) {
-        // check syntax errors
-        if (ifcnt == 0){
-            if (err_str) snprintf(err_str, _ERR_STR_LEN, "'end' without 'if'");
-            syntax_error = true; // syntax errors are never silent or optional
-            return false;
-        }
-        
-        // close recent "if"
-        ifcnt--;
-        skip = 0;
-        ifcnt_skipped = 0;
-        
-        ret = true;
-    }
-    else if (id == CMD_ID_GOTO) {
-        jump_ptr = find_label(argv[0], NULL);
-        if (!jump_ptr) {
-            ret = false;
-            if (err_str) snprintf(err_str, _ERR_STR_LEN, "label not found");
-        }
     }
     else if (id == CMD_ID_CP) {
         u32 flags_ext = BUILD_PATH;
