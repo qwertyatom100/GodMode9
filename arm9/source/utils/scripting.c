@@ -38,9 +38,9 @@
 #define TV_NLIN_DISP    (SCREEN_HEIGHT / (FONT_HEIGHT_EXT + (2*TV_VPAD)))
 #define TV_LLEN_DISP    (((SCREEN_WIDTH_TOP - (2*TV_HPAD)) / FONT_WIDTH_EXT) - (TV_LNOS + 1))
 
-
 // some useful macros
 #define IS_WHITESPACE(c)    ((c == ' ') || (c == '\t') || (c == '\r') || (c == '\n'))
+#define MATCH_STR(s,l,c)    ((l == strlen(c)) && (strncmp(s, c, l) == 0))
 #define _FLG(c)             (1 << (c - 'a'))
 
 // command ids (also entry into the cmd_list aray below)
@@ -494,6 +494,47 @@ char* get_string(char* ptr, const char* line_end, u32* len, char** next, char* e
     return str;
 }
 
+char* skip_block(char* ptr, bool ignore_else, bool stop_after_end) {
+    while (*ptr) {
+        // store line start / line end
+        char* line_start = ptr;
+        char* line_end = strchr(ptr, '\n');
+        if (!line_end) line_end = ptr + strlen(ptr);
+        
+        // grab first string
+        char* str = NULL;
+        u32 str_len = 0;
+        if (!(str = get_string(ptr, line_end, &str_len, &ptr, NULL)) || (str >= line_end)) {
+            // string error or empty line
+            ptr = line_end + 1;
+            continue; 
+        }
+        
+        // check string
+        if (MATCH_STR(str, str_len, _CMD_END)) {
+            return line_start; // end of block found
+        } else if (!ignore_else && MATCH_STR(str, str_len, _CMD_ELSE)) {
+            return line_start; // end of block found
+        } else if (MATCH_STR(str, str_len, _CMD_IF)) {
+            ptr = line_start = skip_block(line_end + 1, true, false);
+            if (ptr == NULL) return NULL;
+            
+            line_end = strchr(ptr, '\n');
+            if (!line_end) line_end = ptr + strlen(ptr);
+            
+            str = get_string(ptr, line_end, &str_len, &ptr, NULL);
+            if (!(MATCH_STR(str, str_len, _CMD_END))) return NULL;
+            if (stop_after_end) return line_end + 1;
+        }
+        
+        // move on to the next line
+        ptr = line_end + 1;
+    }
+    
+    // end of block not found
+    return NULL;
+}
+
 char* find_label(const char* label, const char* last_found) {
     char* script = (char*) SCRIPT_BUFFER; // equals global, not a good solution
     char* ptr = script;
@@ -504,12 +545,13 @@ char* find_label(const char* label, const char* last_found) {
         ptr++;
     }
     
-    char* line_end = NULL;
-    for (;*ptr ; ptr = line_end + 1) {
+    char* next = ptr;
+    for (; next && *ptr; ptr = next) {
         // store line start / get line end
         char* line_start = ptr;
-        line_end = strchr(ptr, '\n');
+        char* line_end = strchr(ptr, '\n');
         if (!line_end) line_end = ptr + strlen(ptr);
+        next = line_end + 1;
         
         // search for label
         char* str = NULL;
@@ -532,10 +574,9 @@ char* find_label(const char* label, const char* last_found) {
             else if ((str < line_end) && (*str != '#')) continue; // neither end of line nor comment
             
             return line_start; // match found
-        } else if ((str_len == strlen(_CMD_IF)) && (strncmp(str, _CMD_IF, str_len) == 0)) {
-            // TODO: just skip over these if blocks
-            continue;
-        } else continue; // irrelevant line
+        } else if (MATCH_STR(str, str_len, _CMD_IF)) {
+            next = skip_block(line_start, true, true);
+        } // irrelevant line
     }
     
     return NULL;
@@ -558,7 +599,7 @@ bool parse_line(const char* line_start, const char* line_end, cmd_id* cmdid, u32
     if ((cmd >= line_end) || (*cmd == '#') || (*cmd == '@')) return true; // empty line or comment or label
     
     // special handling for "if"
-    if ((cmd_len == strlen(_CMD_IF)) && (strncmp(cmd, _CMD_IF, cmd_len) == 0)) {
+    if (MATCH_STR(cmd, cmd_len, _CMD_IF)) {
         *cmdid = CMD_ID_IF;
         return true;
     }
