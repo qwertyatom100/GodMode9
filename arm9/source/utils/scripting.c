@@ -1251,6 +1251,8 @@ bool FileTextViewer(const char* path, bool as_script) {
 bool ExecuteGM9Script(const char* path_script) {
     char* script = (char*) SCRIPT_BUFFER;
     char* ptr = script;
+    char path_str[32+1];
+    TruncateString(path_str, path_script, 32, 12);
     
     // reset control flow global vars
     ifcnt = 0;
@@ -1347,8 +1349,6 @@ bool ExecuteGM9Script(const char* path_script) {
                     if ((lptr1 > lptr0) && (*(lptr1-1) == '\r')) lptr1--; // handle \r
                     if (lptr1 - lptr0 > 32) snprintf(line_str, 32+1, "%.29s...", lptr0);
                     else snprintf(line_str, 32+1, "%.*s", lptr1 - lptr0, lptr0);
-                    char path_str[32+1];
-                    TruncateString(path_str, path_script, 32, 12);
                     ShowPrompt(false, "%s\nline %lu: %s\n%s", path_str, lno, err_str, line_str);
                 }
             }
@@ -1370,7 +1370,13 @@ bool ExecuteGM9Script(const char* path_script) {
         }
     }
     
-    // check for unclosed if here?
+    // check for unresolved if here
+    if (ifcnt) {
+        ShowPrompt(false, "%s\nend of script: unresolved 'if'", path_str);
+        return false;
+    }
+    
+    // success message if applicable
     char* msg_okay = get_var("SUCCESSMSG", NULL);
     if (msg_okay && *msg_okay) ShowPrompt(false, msg_okay);
     
