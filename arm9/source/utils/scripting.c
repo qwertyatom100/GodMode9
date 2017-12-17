@@ -138,15 +138,12 @@ static u32 script_color_active = 0;
 static u32 script_color_comment = 0;
 static u32 script_color_code = 0;
 
-// for if,else,end
-static u32 ifcnt = 0;                // current # of "if" nesting
-static u32 ifcnt_skipped = 0;        // ifcnt increase while skipping conditional blocks
-static u8 skip = 0;                  // 0-> not skipping 1-> if not match and skip until "else" or "end"
-                                     // 2-> if match and skip from "else" to "end" 3-> searching for a label
-
-// control flow
+// global vars for control flow
 static bool syntax_error = false;   // if true, severe error, script has to stop
+static bool skip_state = false;     // if true, skip the block that comes next
 static char* jump_ptr = NULL;       // next position after a jump
+static u32 ifcnt = 0;               // current # of 'if' nesting
+
 
 static inline bool strntohex(const char* str, u8* hex, u32 len) {
     if (!len) {
@@ -511,9 +508,9 @@ char* skip_block(char* ptr, bool ignore_else, bool stop_after_end) {
         }
         
         // check string
-        if (MATCH_STR(str, str_len, _CMD_END)) {
+        if (MATCH_STR(str, str_len, _CMD_END)) { // stop at end
             return line_start; // end of block found
-        } else if (!ignore_else && MATCH_STR(str, str_len, _CMD_ELSE)) {
+        } else if (!ignore_else && MATCH_STR(str, str_len, _CMD_ELSE)) { // stop at else
             return line_start; // end of block found
         } else if (MATCH_STR(str, str_len, _CMD_IF)) {
             ptr = line_start = skip_block(line_end + 1, true, false);
@@ -645,27 +642,23 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
     // perform command
     if (id == CMD_ID_IF) {
         // check the argument
-        if (strncmp(argv[0], _ARG_TRUE, _ARG_MAX_LEN) == 0) {
-            skip = 0; // "if true", nothing to skip
-        } else { // "if false"
-            skip = 1;
-            ifcnt_skipped = 0;
-        }
-        
+        skip_state = (strncmp(argv[0], _ARG_TRUE, _ARG_MAX_LEN) != 0); // "if true" or "if false"
         ifcnt++;
-        ret = true;
+        
+        if (syntax_error && err_str)
+            snprintf(err_str, _ERR_STR_LEN, "syntax error after 'if'");
+        ret = !syntax_error;
     }
     else if (id == CMD_ID_ELSE) {
         // check syntax errors
         if (ifcnt == 0) {
             if (err_str) snprintf(err_str, _ERR_STR_LEN, "'else' without 'if'");
-            syntax_error = true; // syntax errors are never silent or optional
+            syntax_error = true;
             return false;
         }
         
         // turn the skip state
-        ifcnt_skipped = 0;
-        skip = 2;
+        skip_state = !skip_state;
         
         ret = true;
     }
@@ -673,14 +666,13 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
         // check syntax errors
         if (ifcnt == 0){
             if (err_str) snprintf(err_str, _ERR_STR_LEN, "'end' without 'if'");
-            syntax_error = true; // syntax errors are never silent or optional
+            syntax_error = true;
             return false;
         }
         
-        // close recent "if"
+        // close last "if"
+        skip_state = false;
         ifcnt--;
-        skip = 0;
-        ifcnt_skipped = 0;
         
         ret = true;
     }
@@ -953,86 +945,6 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
     }
     
     return ret;
-}
-
-bool skip_cond_block(char** ptr_p, char** line_end_p, u32* flags, char* err_str, u32* lno, const char* end) {
-    // This function is to skip conditional blocks until stop skipping
-    // skip is always 1 or 2 at the start
-    
-    *ptr_p = *line_end_p + 1;
-    
-    for (; *ptr_p < end;) { // script execute loop
-        (*lno)++;
-        *flags = 0;
-        
-        // find line end
-        *line_end_p = strchr(*ptr_p, '\n');
-        if (!*line_end_p) *line_end_p = *ptr_p + strlen(*ptr_p);
-    
-        char args[_MAX_ARGS][_ARG_MAX_LEN];
-        char* argv[_MAX_ARGS];
-        char* line_end = *line_end_p; // const, line_end_p is only used in "goto" command
-        u32 argc = 0;
-        cmd_id cmdid;
-
-        // set up argv array
-        for (u32 i = 0; i < _MAX_ARGS; i++)
-            argv[i] = args[i];
-    
-        // flags handling (if no pointer given)
-        u32 lflags;
-        if (!flags) flags = &lflags;
-        *flags = 0;
-        
-        // parse current line, grab cmd / flags / args
-        if (!parse_line(*ptr_p, line_end, &cmdid, flags, &argc, argv, err_str)) {
-            *flags &= ~(_FLG('o')|_FLG('s')); // parsing errors are never silent or optional
-            return false;
-        }
-        
-        // handle control commands
-        if (cmdid == CMD_ID_IF) {
-            ifcnt_skipped++;
-            ifcnt++;
-        }else if (cmdid == CMD_ID_ELSE) {
-            // check syntax errors
-            if (ifcnt == 0) {
-                if (err_str) snprintf(err_str, _ERR_STR_LEN, "'else' without 'if'");
-                *flags &= ~(_FLG('o')|_FLG('s')); // syntax errors are never silent or optional
-                return false;
-            }
-            
-            // turn the skip state
-            if (ifcnt_skipped == 0) {
-                skip = 0;
-                return true; // skipping stopped, exit the function
-            }
-        }else if (cmdid == CMD_ID_END) {
-            // check syntax errors
-            if (ifcnt == 0){
-                if (err_str) snprintf(err_str, _ERR_STR_LEN, "'end' without 'if'");
-                *flags &= ~(_FLG('o')|_FLG('s')); // syntax errors are never silent or optional
-                return false;
-            }
-            
-            if (ifcnt_skipped == 0) {
-                skip = 0;
-                ifcnt--;
-                return true; // skipping stopped, exit the function
-            }else{
-                ifcnt--;
-                ifcnt_skipped--;
-            }
-        }
-        
-        // reposition pointer
-        *ptr_p = *line_end_p + 1;
-    }
-    
-    // the conditional block is not closed and reached the end of the script
-    // if (err_str) snprintf(err_str, _ERR_STR_LEN, "'end' expected");
-    // *flags &= ~(_FLG('o')|_FLG('s')); // syntax errors are never silent or optional
-    return false;
 }
 
 bool run_line(const char* line_start, const char* line_end, u32* flags, char* err_str, bool if_cond) {
@@ -1340,10 +1252,9 @@ bool ExecuteGM9Script(const char* path_script) {
     char* script = (char*) SCRIPT_BUFFER;
     char* ptr = script;
     
-    // reset some global var for "if" and "goto"
-    skip = 0;
+    // reset control flow global vars
     ifcnt = 0;
-    ifcnt_skipped = 0;
+    skip_state = false;
     syntax_error = false;
     
     // fetch script - if no path is given, assume script already in script buffer
@@ -1407,12 +1318,14 @@ bool ExecuteGM9Script(const char* path_script) {
         
         // run command
         char err_str[_ERR_STR_LEN+1] = { 0 };
-        bool result = true;
-        if (skip == 0) result = run_line(ptr, line_end, &flags, err_str, false);
-        else result = false; // unexpected
+        bool result = run_line(ptr, line_end, &flags, err_str, false);
         
-        // skip conditional block if should
-        if (skip == 1 || skip == 2) result = skip_cond_block(&ptr, &line_end, &flags, err_str, &lno, end);
+        // skip state handling
+        char* skip_ptr = ptr;
+        if (skip_state) {
+            skip_ptr = skip_block(line_end + 1, false, false);
+            if (!skip_ptr) snprintf(err_str, _ERR_STR_LEN, "unclosed conditional");
+        }
         
         
         if (!result) { // error handling
@@ -1442,11 +1355,12 @@ bool ExecuteGM9Script(const char* path_script) {
         }
         
         // reposition pointer
-        if (jump_ptr) {
+        if (skip_ptr != ptr) {
+            ptr = skip_ptr;
+            lno = get_lno(script, script_size, ptr) - 1;
+        } else if (jump_ptr) {
             ptr = jump_ptr;
             lno = get_lno(script, script_size, ptr) - 1;
-            skip = 0;
-            ifcnt_skipped = 0;
             ifcnt = 0; // jumping into conditional block is unexpected/unsupported
             jump_ptr = NULL;
         } else ptr = line_end + 1;
