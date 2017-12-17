@@ -1278,7 +1278,8 @@ bool ExecuteGM9Script(const char* path_script) {
     }
     
     // script execute loop
-    for (u32 lno = 1; ptr < end; lno++) {
+    u32 lno = 1;
+    while (ptr < end) {
         u32 flags = 0;
         
         // find line end
@@ -1357,15 +1358,19 @@ bool ExecuteGM9Script(const char* path_script) {
         // reposition pointer
         if (skip_ptr != ptr) {
             ptr = skip_ptr;
-            lno = get_lno(script, script_size, ptr) - 1;
+            lno = get_lno(script, script_size, ptr);
         } else if (jump_ptr) {
             ptr = jump_ptr;
-            lno = get_lno(script, script_size, ptr) - 1;
+            lno = get_lno(script, script_size, ptr);
             ifcnt = 0; // jumping into conditional block is unexpected/unsupported
             jump_ptr = NULL;
-        } else ptr = line_end + 1;
+        } else {
+            ptr = line_end + 1;
+            lno++;
+        }
     }
     
+    // check for unclosed if here?
     char* msg_okay = get_var("SUCCESSMSG", NULL);
     if (msg_okay && *msg_okay) ShowPrompt(false, msg_okay);
     
