@@ -203,8 +203,8 @@ void DrawUserInterface(const char* curr_path, DirEntry* curr_entry, u32 curr_pan
         ((clipboard->n_entries) ? (1<<1) : 0) |
         ((CheckSDMountState()) ? (1<<2) : 0) |
         ((GetMountState()) ? (1<<3) : 0) |
-        ((GetWritePermissions() > PERM_BASE) ? (1<<4) : 0) |
-        (curr_pane<<5);
+        //((GetWritePermissions() > PERM_BASE) ? (1<<4) : 0) |
+        (curr_pane<<4);
     
     if (state_prev != state_curr) {
         ClearScreenF(true, false, COLOR_STD_BG);
@@ -273,9 +273,10 @@ void DrawUserInterface(const char* curr_path, DirEntry* curr_entry, u32 curr_pan
         FLAVOR " " VERSION, // generic start part
         (*curr_path) ? ((clipboard->n_entries == 0) ? "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - COPY files / [+R] CREATE entry\n" :
         "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - PASTE files / [+R] CREATE entry\n") :
-        ((GetWritePermissions() > PERM_BASE) ? "R+Y - Relock write permissions\n" : ""),
-        (*curr_path) ? "" : (GetMountState()) ? "R+X - Unmount image\n" : "",
+        ((GetWritePermissions() > PERM_BASE) ? "R+Y - Relock write permissions\n" : "R+Y - Unlock write permissions\n"),
         (*curr_path) ? "" : (CheckSDMountState()) ? "R+B - Unmount SD card\n" : "R+B - Remount SD card\n",
+        (*curr_path) ? "" : (GetMountState()) ? "R+X - Unmount image\n" : "",
+        //(*curr_path) ? "" : (CheckSDMountState()) ? "R+B - Unmount SD card\n" : "R+B - Remount SD card\n",
         (*curr_path) ? "R+A - Directory options\n" : "R+A - Drive options\n", 
         "R+L - Make a Screenshot\n",
         "R+\x1B\x1A - Switch to prev/next pane\n",
@@ -2095,8 +2096,9 @@ u32 GodMode(int entrypoint) {
                 ClearScreenF(false, true, COLOR_STD_BG);
                 GetDirContents(current_dir, current_path);
             } else if (switched && (pad_state & BUTTON_Y)) {
-                SetWritePermissions(PERM_BASE, false);
-                ClearScreenF(false, true, COLOR_STD_BG);
+                SetWritePermissions((GetWritePermissions() > PERM_BASE) ? PERM_BASE : PERM_ALL, false);
+                //SetWritePermissions(PERM_BASE, false);
+                //ClearScreenF(false, true, COLOR_STD_BG);
             }
         } else if (!switched) { // standard unswitched command set
             if ((curr_drvtype & DRV_VIRTUAL) && (pad_state & BUTTON_X)) {

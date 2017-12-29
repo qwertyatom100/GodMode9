@@ -174,6 +174,10 @@ bool SetWritePermissions(u32 perm, bool add_perm) {
             if (!ShowUnlockSequence(6, "!THIS IS YOUR ONLY WARNING!\n \nYou want to enable SysNAND\nlvl3 writing permissions.\n \nThis enables you to OVERWRITE\n%s", IS_SIGHAX ? "your B9S installation and/or\nBRICK your console!" : IS_A9LH ? "your A9LH installation and/or\nBRICK your console!" : "essential system files and/or\nBRICK your console!"))
                 return false;
             break;
+        case PERM_ALL:
+            if (!ShowUnlockSequence(6, "!THIS IS YOUR ONLY WARNING!\n \nYou want to enable SysNAND\nlvl3 writing permissions.\n \nThis enables you to OVERWRITE\n%s", IS_SIGHAX ? "your B9S installation and/or\nBRICK your console!" : IS_A9LH ? "your A9LH installation and/or\nBRICK your console!" : "essential system files and/or\nBRICK your console!"))
+                return false;
+            break;
         default:
             ShowPrompt(false, "Unlock write permission is not allowed.");
             return false;
