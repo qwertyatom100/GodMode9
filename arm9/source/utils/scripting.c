@@ -24,6 +24,7 @@
 #define _CHOICE_STR_LEN 32
 #define _CHOICE_MAX_N   12
 
+#define _CMD_NOT        "not"
 #define _CMD_IF         "if"
 #define _CMD_ELIF       "elif"
 #define _CMD_ELSE       "else"
@@ -57,6 +58,7 @@
 // command ids (also entry into the cmd_list aray below)
 typedef enum {
     CMD_ID_NONE = 0,
+    CMD_ID_NOT,
     CMD_ID_IF,
     CMD_ID_ELIF,
     CMD_ID_ELSE,
@@ -70,11 +72,14 @@ typedef enum {
     CMD_ID_FILESEL,
     CMD_ID_SET,
     CMD_ID_STRSPLIT,
+    CMD_ID_STRREP,
     CMD_ID_CHK,
     CMD_ID_ALLOW,
     CMD_ID_CP,
     CMD_ID_MV,
     CMD_ID_INJECT,
+    CMD_ID_FILL,
+    CMD_ID_FDUMMY,
     CMD_ID_RM,
     CMD_ID_MKDIR,
     CMD_ID_MOUNT,
@@ -110,6 +115,7 @@ typedef struct {
 
 Gm9ScriptCmd cmd_list[] = {
     { CMD_ID_NONE    , "#"       , 0, 0 }, // dummy entry
+    { CMD_ID_NOT     , _CMD_NOT  , 0, 0 }, // inverts the output of the following command
     { CMD_ID_IF      , _CMD_IF   , 1, 0 }, // control flow commands at the top of the list
     { CMD_ID_ELIF    , _CMD_ELIF , 1, 0 },
     { CMD_ID_ELSE    , _CMD_ELSE , 0, 0 },
@@ -120,14 +126,17 @@ Gm9ScriptCmd cmd_list[] = {
     { CMD_ID_QR      , "qr"      , 2, 0 },
     { CMD_ID_ASK     , "ask"     , 1, 0 },
     { CMD_ID_INPUT   , "input"   , 2, 0 },
-    { CMD_ID_FILESEL , "filesel" , 3, 0 },
+    { CMD_ID_FILESEL , "filesel" , 3, _FLG('d') },
     { CMD_ID_SET     , "set"     , 2, 0 },
     { CMD_ID_STRSPLIT, "strsplit", 3, _FLG('b') | _FLG('f')},
+    { CMD_ID_STRREP  , "strrep"  , 3, 0 },
     { CMD_ID_CHK     , "chk"     , 2, _FLG('u') },
     { CMD_ID_ALLOW   , "allow"   , 1, _FLG('a') },
     { CMD_ID_CP      , "cp"      , 2, _FLG('h') | _FLG('w') | _FLG('k') | _FLG('s') | _FLG('n')},
     { CMD_ID_MV      , "mv"      , 2, _FLG('w') | _FLG('k') | _FLG('s') | _FLG('n') },
     { CMD_ID_INJECT  , "inject"  , 2, _FLG('n') },
+    { CMD_ID_FILL    , "fill"    , 2, 0 },
+    { CMD_ID_FDUMMY  , "fdummy"  , 2, 0 },
     { CMD_ID_RM      , "rm"      , 1, 0 },
     { CMD_ID_MKDIR   , "mkdir"   , 1, 0 },
     { CMD_ID_MOUNT   , "imgmount", 1, 0 },
@@ -161,6 +170,16 @@ static char* jump_ptr = NULL;       // next position after a jump
 static u32 skip_state = 0;          // zero, _SKIP_BLOCK, _SKIP_TILL_END
 static u32 ifcnt = 0;               // current # of 'if' nesting
 
+
+static inline bool isntrboot(void) {
+    // taken over from Luma 3DS:
+    // https://github.com/AuroraWright/Luma3DS/blob/bb5518b0f68d89bcd8efaf326355a770d5e57856/source/main.c#L58-L62
+    const vu8 *bootMediaStatus = (const vu8 *) 0x1FFFE00C;
+    const vu32 *bootPartitionsStatus = (const vu32 *) 0x1FFFE010;
+
+    // shell closed, no error booting NTRCARD, NAND partitions not even considered
+    return (bootMediaStatus[3] == 2) && !bootMediaStatus[1] && !bootPartitionsStatus[0] && !bootPartitionsStatus[1];
+}
 
 static inline bool strntohex(const char* str, u8* hex, u32 len) {
     if (!len) {
@@ -402,7 +421,7 @@ bool init_vars(const char* path_script) {
     set_var("NULL", ""); // this one is special and should not be changed later 
     set_var("CURRDIR", curr_dir); // script path, never changes
     set_var("GM9OUT", OUTPUT_PATH); // output path, never changes
-    set_var("HAX", IS_SIGHAX ? "sighax" : IS_A9LH ? "a9lh" : ""); // type of hax running from
+    set_var("HAX", IS_SIGHAX ? (isntrboot() ? "ntrboot" : "sighax") : IS_A9LH ? "a9lh" : ""); // type of hax running from
     set_var("ONTYPE", IS_O3DS ? "O3DS" : "N3DS"); // type of the console
     set_var("RDTYPE", IS_DEVKIT ? "devkit" : "retail"); // devkit / retail
     upd_var(NULL); // set all dynamic environment vars
@@ -466,6 +485,7 @@ u32 get_flag(char* str, u32 len, char* err_str) {
     else if (len == 2) flag_char = str[1];
     else if (strncmp(str, "--all", len) == 0) flag_char = 'a';
     else if (strncmp(str, "--before", len) == 0) flag_char = 'b';
+    else if (strncmp(str, "--include_dirs", len) == 0) flag_char = 'd';
     else if (strncmp(str, "--first", len) == 0) flag_char = 'f';
     else if (strncmp(str, "--hash", len) == 0) flag_char = 'h';
     else if (strncmp(str, "--skip", len) == 0) flag_char = 'k';
@@ -616,8 +636,11 @@ bool parse_line(const char* line_start, const char* line_end, cmd_id* cmdid, u32
     if (!(cmd = get_string(ptr, line_end, &cmd_len, &ptr, err_str))) return false; // string error
     if ((cmd >= line_end) || (*cmd == '#') || (*cmd == '@')) return true; // empty line or comment or label
     
-    // special handling for "if" and "elif"
-    if (MATCH_STR(cmd, cmd_len, _CMD_IF)) {
+    // special handling for "if", "elif" and "not"
+    if (MATCH_STR(cmd, cmd_len, _CMD_NOT)) {
+        *cmdid = CMD_ID_NOT;
+        return true;
+    } else if (MATCH_STR(cmd, cmd_len, _CMD_IF)) {
         *cmdid = CMD_ID_IF;
         return true;
     } else if (MATCH_STR(cmd, cmd_len, _CMD_ELIF)) {
@@ -652,7 +675,7 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
     // process arg0 @string
     u64 at_org = 0;
     u64 sz_org = 0;
-    if ((id == CMD_ID_SHA) || (id == CMD_ID_SHAGET) || (id == CMD_ID_INJECT)) {
+    if ((id == CMD_ID_SHA) || (id == CMD_ID_SHAGET) || (id == CMD_ID_INJECT) || (id == CMD_ID_FILL)) {
         char* atstr_org = strrchr(argv[0], '@');
         if (atstr_org) {
             *(atstr_org++) = '\0';
@@ -664,7 +687,13 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
     }
     
     // perform command
-    if (id == CMD_ID_IF) {
+    if (id == CMD_ID_NOT) {
+        // check the argument
+        // "not true" or "not false"
+        ret = (strncmp(argv[0], _ARG_FALSE, _ARG_MAX_LEN) == 0);
+        if (err_str) snprintf(err_str, _ERR_STR_LEN, "'not' an error");
+    }
+    else if (id == CMD_ID_IF) {
         // check the argument
         // "if true" or "if false"
         skip_state = (strncmp(argv[0], _ARG_TRUE, _ARG_MAX_LEN) == 0) ? 0 : _SKIP_BLOCK;
@@ -802,7 +831,7 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
             if (err_str) snprintf(err_str, _ERR_STR_LEN, "invalid path");
         } else {
             *(npattern++) = '\0';
-            ret = FileSelector(choice, argv[0], path, npattern, false, true);
+            ret = FileSelector(choice, argv[0], path, npattern, false, !(flags & _FLG('d')));
             if (err_str) snprintf(err_str, _ERR_STR_LEN, "fileselect abort");
         }
         
@@ -834,6 +863,21 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
                 if (err_str) snprintf(err_str, _ERR_STR_LEN, "var fail");
             }
         } else if (err_str) snprintf(err_str, _ERR_STR_LEN, "argv[2] is not a char");
+    }
+    else if (id == CMD_ID_STRREP) {
+        char str[_ARG_MAX_LEN];
+        strncpy(str, argv[1], _ARG_MAX_LEN);
+        
+        if (strnlen(argv[2], _ARG_MAX_LEN) != 2) {
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "argv[2] must be 2 chars");
+            ret = false;
+        } else {
+            for (u32 i = 0; str[i] && (i < _ARG_MAX_LEN); i++) {
+                if (str[i] == argv[2][0]) str[i] = argv[2][1];
+            }
+            ret = set_var(argv[0], str);
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "var fail");
+        }
     }
     else if (id == CMD_ID_CHK) {
         if (flags & _FLG('u')) {
@@ -879,6 +923,28 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
         if (flags & _FLG('n')) flags_ext |= NO_CANCEL;
         ret = FileInjectFile(argv[1], argv[0], at_dst, at_org, sz_org, &flags_ext);
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "inject fail");
+    }
+    else if (id == CMD_ID_FILL) {
+        u32 flags_ext = ALLOW_EXPAND;
+        u8 fillbyte = 0;
+        if ((strnlen(argv[1], _ARG_MAX_LEN) != 2) || !strntohex(argv[1], &fillbyte, 1)) {
+            ret = false;
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "fillbyte fail");
+        } else {
+            if (flags & _FLG('n')) flags_ext |= NO_CANCEL;
+            ret = FileSetByte(argv[0], at_org, sz_org, fillbyte, &flags_ext);
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "fill fail");
+        }
+    }
+    else if (id == CMD_ID_FDUMMY) {
+        u32 fsize;
+        if (sscanf(argv[1], "%lX", &fsize) != 1) {
+            ret = false;
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "bad filesize");
+        } else {
+            ret = FileCreateDummy(argv[0], NULL, fsize);
+            if (err_str) snprintf(err_str, _ERR_STR_LEN, "create dummy fail");
+        }
     }
     else if (id == CMD_ID_RM) {
         char pathstr[_ERR_STR_LEN];
@@ -1036,6 +1102,7 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "unknown error");
     }
     
+    if (ret && err_str) snprintf(err_str, _ERR_STR_LEN, "command success");
     return ret;
 }
 
@@ -1061,35 +1128,33 @@ bool run_line(const char* line_start, const char* line_end, u32* flags, char* er
     }
     
     // control flow command handling
-    if (IS_CTRLFLOW_CMD(cmdid)) {
-        // block out of control flow commands
-        if (if_cond) {
-            if (err_str) snprintf(err_str, _ERR_STR_LEN, "control flow error");
-            syntax_error = true;
-            return false;
-        }
+    // block out of control flow commands
+    if (if_cond && IS_CTRLFLOW_CMD(cmdid)) {
+        if (err_str) snprintf(err_str, _ERR_STR_LEN, "control flow error");
+        syntax_error = true;
+        return false;
+    }
         
-        // shortcuts for "elif" / "else"
-        if (((cmdid == CMD_ID_ELIF) || (cmdid == CMD_ID_ELSE)) && !skip_state) {
-            skip_state = _SKIP_TILL_END;
-            cmdid = 0;
-        }
+    // shortcuts for "elif" / "else"
+    if (((cmdid == CMD_ID_ELIF) || (cmdid == CMD_ID_ELSE)) && !skip_state) {
+        skip_state = _SKIP_TILL_END;
+        cmdid = 0;
+    }
+    
+    // handle "if" / "elif" / "not"
+    if ((cmdid == CMD_ID_IF) || (cmdid == CMD_ID_ELIF) || (cmdid == CMD_ID_NOT)) {
+        // set defaults
+        argc = 1;
+        strncpy(argv[0], _ARG_FALSE, _ARG_MAX_LEN);
         
-        // handle "if" / "elif"
-        if ((cmdid == CMD_ID_IF) || (cmdid == CMD_ID_ELIF)) {
-            // set defaults
-            argc = 1;
-            strncpy(argv[0], _ARG_FALSE, _ARG_MAX_LEN);
-            
-            // skip to behind the "if"/"elif" command
-            char* line_start_next = (char*) line_start;
-            for (; IS_WHITESPACE(*line_start_next); line_start_next++);
-            line_start_next += strlen((cmdid == CMD_ID_IF) ? _CMD_IF : _CMD_ELIF);
-            
-            // run condition, take over result
-            if (run_line(line_start_next, line_end, flags, err_str, true))
-                strncpy(argv[0], _ARG_TRUE, _ARG_MAX_LEN);
-        }
+        // skip to behind the command
+        char* line_start_next = (char*) line_start;
+        for (; IS_WHITESPACE(*line_start_next); line_start_next++);
+        for (; *line_start_next && !IS_WHITESPACE(*line_start_next); line_start_next++);
+        
+        // run condition, take over result
+        if (run_line(line_start_next, line_end, flags, err_str, true))
+            strncpy(argv[0], _ARG_TRUE, _ARG_MAX_LEN);
     }
     
     // run the command (if available)

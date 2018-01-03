@@ -85,9 +85,27 @@ set USERINPUT "Hello World"
 input "Enter something please?" USERINPUT
 echo "You entered:\n$[USERINPUT]"
 
+# 'strsplit' COMMAND
+# The 'strsplit' command extracts a substring from a string
+# -b / --before extracts the substring *before* the split char
+# -f / --first matches the first, not last occurence of the split char
+strsplit TESTSPLIT1 "one/two/three" "/"
+strsplit -b TESTSPLIT2 "one/two/three" "/"
+strsplit -f TESTSPLIT3 "one/two/three" "/"
+strsplit -b -f TESTSPLIT4 "one/two/three" "/"
+echo "one/two/three\n$[TESTSPLIT1]\n$[TESTSPLIT2]\n$[TESTSPLIT3]\n$[TESTSPLIT4]"
+
+# strrep COMMAND
+# The 'strrep' command replaces one char with another inside a string
+# notice how we use TESTREP both as input and output
+set TESTREP "Hello_World"
+strrep TESTREP $[TESTREP] "_ "
+echo $[TESTREP]
+
 # 'filesel' COMMAND
 # The 'filesel' command allows the user to choose a file inside a directory
 # The path is stored inside a variable, and the selection can be limited via wildcards
+# -d / --include_dirs allows to browse folders and select files inside
 filesel "Please select a file" 0:/*.* SELFILE
 echo "You selected $[SELFILE]\nWe'll do nothing with that :)."
 
@@ -96,7 +114,7 @@ echo "You selected $[SELFILE]\nWe'll do nothing with that :)."
 # doing this from the beginning is preferable, so that no actions are taken unless all required write permissions are unlocked
 # (note #1: without 'allow', write permissions are still in place and the user will be asked on demand)
 # (note #2: this simple testing script requires no additional permissions, thus the command is hidden behind a '#')
-# -a / -all allows writes to the specified location and all included files and directories
+# -a / --all allows writes to the specified location and all included files and directories
 # allow -a M:/
 
 # 'rm' COMMAND
@@ -179,6 +197,23 @@ inject S:/nand_hdr.bin@100:4 $[RENPATH]@200 # offsets and sizes are in hex
 set ERRORMSG "SHA check failed (this was expected)"
 sha -o $[RENPATH] $[TESTPATH].sha
 set ERRORMSG ""
+
+# 'fdummy' COMMAND
+# This command creates a dummy file of the specified size (size in hex)
+# Contents of the dummy file are undefined and existing files won't be overwritten
+set DUMMY 0:/testdir/dummy.bin
+fdummy $[DUMMY] 400
+
+# 'fill' COMMAND
+# This command fills (a portition of) a file with the specified byte value
+# The syntax is: fill destination@x:y fillbyte
+#                x: destination offset (in hex)
+#                y: destination size, starting at x (in hex)
+# If x is not given, the full file size, starting from offset 0, is overwritten
+# If y is not given, everything starting from offset x is overwritten
+# -n / --no_cancel prevents user cancels (useful on critical operations)
+fill $[DUMMY]@100:100 FF
+fill $[DUMMY]@300 80
 
 # 'fixcmac' COMMAND
 # Use this to fix the CMACs for a file or a whole folder (recursively)
